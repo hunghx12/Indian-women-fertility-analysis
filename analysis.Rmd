@@ -1,0 +1,137 @@
+---
+title: ""
+author: "Xuan Hung Ho"
+date: '2022-08-26'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Data:
+The dataset originates from the Fiji Fertility Survey and provides information on the number of children ever born to married women of the Indian race. The data classifies these women by:
+
+- Duration since their first marriage (grouped in six categories)
+- Type of place of residence (categories: Suva, urban, and rural)
+- Educational level (categories: none, lower primary, upper primary, and secondary or higher).
+The dataset can be found in the file data.txt. The dataset consists of 70 rows, representing 70 groups of families. Each row provides details for:
+
+- duration: Marriage duration of mothers in each group (in years)
+- residence: Residence of families in each group (categories: Suva, urban, rural)
+- education: Education of mothers in each group (categories: none, lower primary, upper primary, secondary+)
+- nChildren: Number of children ever born in each group (e.g., 4)
+- nMother: Number of mothers in each group (e.g., 8).
+
+Problem:
+We aim to determine which factors (duration, residence, education) and their two-way interactions influence the number of children per woman (fertility rate). The observed number of children ever born in each group (nChildren) is contingent upon the number of mothers (nMother) in each group. The disparity in the number of mothers across groups needs to be considered.
+
+Report Requirements:
+Write an analysis report that encapsulates the main findings. The report should:
+
+- Summarize the core conclusions.
+- Incorporate highlights from the analysis, including:
+- Data visualization
+    + Choice of model (e.g., Poisson, binomial, gamma, etc.)
+    + Model fitting and selection (e.g., using AIC)
+    + Diagnostics
+    + Check for overdispersion if necessary
+    + Provide a summary/interpretation of the final model.
+
+
+```{r include=FALSE}
+#install.packages("faraway")
+
+library(dplyr)
+library(tidyr)
+library(faraway)
+library(MASS)
+```
+
+We will first load the data into working environment. The table below displays the number of children and mothers grouped by duration of mother's marriage, residence of families and education level of mothers.
+
+```{r}
+data <- read.table(file ="data.txt", header=TRUE)
+data$duration <- factor(data$duration, 
+                        levels=c("0-4","5-9","10-14","15-19","20-24","25-29"), 
+                        ordered=TRUE)
+data$residence <- factor(data$residence,
+                         levels=c("Suva", "urban", "rural"))
+data$education <- factor(data$education, 
+                         levels=c("none", "lower", "upper", "sec+"))
+ftable(xtabs(cbind(nChildren,nMother) ~ duration + residence + education, data))
+```
+Note that marriage $duration$ is a blocking factor as more children are born over time. We can make the assumption by looking at the plots:
+
+```{r}
+par(mfrow = c(1,3))
+plot(nChildren/nMother ~ duration, data)
+plot(nChildren/nMother ~ residence, data)
+plot(nChildren/nMother ~ education, data)
+```
+The box plots illustrates that the fertility rates does vary across groups of marriage $duration$, hence, concretes the assumption of the blocking factor.
+
+We consider the number of children born as the response with mother's marriage duration, level of education and residence of family as discrete predictors. From this assumption, the straightforward way is to fit an addictive model using Poisson regression with identity link, as we are analysing the rate of children given birth by each mother.
+
+Instead of treating the fertility rate ($nChildren/nMother$) as the response, $nChildren$ is kept as the response, plus we have another term as offset for log of number of mother. This can be explained by:
+```{=latex}
+\[log(fertility\_rate_i) = \beta_0  + \beta_1 \times duration + \beta_2 \times residence + \beta_3 \times education \]
+\[log(\frac{nChildren}{nMother}) = \beta_0  + \beta_1 \times duration + \beta_2 \times residence + \beta_3 \times education\]
+\[log(nChildren) = log(nMother) + \beta_0 + \beta_1 \times duration + \beta_2 \times residence + \beta_3 \times education\]
+```
+
+The model is fitted as below:
+```{r}
+addictive <- glm(nChildren ~ offset(log(nMother)) + duration + residence + education,
+                family = poisson, data)
+summary(addictive)
+```
+
+We now plot interaction between predictors to check whether our assumption is valid:
+
+```{r}
+par(mfrow=c(2,2))
+with(data, interaction.plot(duration, residence, nChildren/nMother))
+with(data, interaction.plot(education, duration, nChildren/nMother))
+with(data, interaction.plot(residence, education, nChildren/nMother))
+```
+
+Although we have considered marriage $duration$ as blocking factor, the plots show otherwise as there might be interactions between $education$ and $duration$ factors on the fertility rate. Apart from that, we can clearly observe there is another interaction between $education$ and $residence$. We need to verify this by constructing a model with interaction between predictors.
+
+```{r}
+full.model <- glm(nChildren ~ offset(log(nMother)) + (duration + residence + education)^2,
+                family = poisson, data)
+summary(full.model)
+```
+Comparing to the $addictive$ model with residual deviance of 70.665 on 59 degrees of freedom, the interactive model $full.model$ has residual deviance of 30.856 on 28 df, which shows that it is reasonable to take two-way interactions into account.
+
+To test whether the interaction between $education$ and $duration$ affects the model, we fit a reduced model where the interaction between the two predictors is not included, and perform a likelihood ratio test between the two models. The result is shown as below:
+```{r}
+reduced.interaction.edu.dur = glm(nChildren ~ offset(log(nMother)) + (residence + education)^2 + (residence + duration)^2,
+                family = poisson, data)
+anova(reduced.interaction.edu.dur, full.model, test="Chi")
+```
+With p-value = 0.5672, it is clearly that the interaction between $education$ and marriage $duration$ has negligible effect on the model, which verifies our aforementioned assumption.
+
+Now we perform model selection from the full model using AIC. We will set the direction as both ways so at every step, the algorithm will try to drop or re-add any term to the current model and compute AIC scores. The selection steps are done as follows:
+
+```{r}
+final.model = step(full.model, scope=~.)
+```
+From this model selection, we can observe that dropping all interaction from the full model will reduce AIC score to lowest, thus, conclude our final model as the addictive model without any two-way interaction.
+
+Finally, we will check for overdispersion of the final model. We estimate the dispersion parameter by dividing the Pearson's $\chi^2$-statistics by the degrees of freedom:
+```{r}
+sum(residuals(final.model, type="pearson") ^ 2) / final.model$df.residual
+```
+This result suggests that this model does not suffer from overdispersion.
+
+Diagnostic plots:
+```{r}
+res <- residuals(final.model)
+eta.hat <- predict(final.model,type="link")
+plot(res ~ eta.hat, xlab=expression(hat(eta)), ylab="Deviance residuals") 
+halfnorm(res, ylab="Deviance residuals")
+```
+We can see from diagnostic plots that there is no extreme fitted values nor abnormal case for the quantile plot except for the 17th and 30th data.
+
+In conclusion, all factors in the data set affect the number of children given birth but there is no two-way interaction significance between any factors.
